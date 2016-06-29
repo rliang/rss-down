@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from cgi import parse_header
+from shutil import copyfileobj
+from os import path, linesep, makedirs
+from urllib.parse import quote_plus
+from urllib.request import urlopen
+from xml.etree import ElementTree
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+
+NAME = 'rss-down'
+SPOOL = 'Downloads'
+
+def home_path_join(*paths):
+    return path.expanduser(path.join('~', *paths))
+
+config_file = home_path_join('.config', path.extsep.join([NAME, 'conf']))
+cache_dir = home_path_join('.cache', NAME)
+makedirs(cache_dir, exist_ok=True)
+
+def read_lines(filename):
+    with open(filename, 'r') as src:
+        return [l for l in src.read().split(linesep) if l is not '']
+
+def load_xml(url):
+    with urlopen(url) as src:
+        return ElementTree.parse(src)
+
+def download(url):
+    with urlopen(url) as src:
+        headers = dict(src.headers)
+        main, params = parse_header(headers['Content-Disposition'])
+        dest = home_path_join(SPOOL, params['filename'])
+        with open(dest, 'wb') as dst:
+            copyfileobj(src, dst)
+
+def fetch(feed, cache_path):
+    cache = read_lines(cache_path)
+    links = load_xml(feed).findall('.//item/link')
+    return [l.text for l in links if l.text not in cache]
+
+def update(feed):
+    cache_path = path.join(cache_dir, quote_plus(feed))
+    links = fetch(feed, cache_path)
+    with ThreadPoolExecutor() as executor:
+        tasks = {executor.submit(download, l): l for l in links}
+        for t in as_completed(tasks):
+            t.result()
+            with open(cache_path, 'a') as cache_file:
+                cache_file.write(tasks[t] + linesep)
+
+with ThreadPoolExecutor() as executor:
+    wait({executor.submit(update, feed) for feed in read_lines(config_file)})
